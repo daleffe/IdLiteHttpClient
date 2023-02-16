@@ -1,14 +1,5 @@
-# Delphi
+# IdLiteHttpClient
 
- Delphi template project
+A very simple HTTP (not HTTPS) client using Indy to allow GET requests that send data like POST/PUT/PATCH.
 
-### RTTI
-
-If you don't use RTTI, put follow lines at start of your project file (.dpr):
-
-```delphi
-{$WEAKLINKRTTI ON}
-{$RTTI EXPLICIT METHODS([]) PROPERTIES([]) FIELDS([])}
-```
-
-It'll save ~500 kb of your generated *.exe*.
+Developed using Delphi 2007 and Indy 10.1.5.

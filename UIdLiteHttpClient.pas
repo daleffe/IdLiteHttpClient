@@ -19,17 +19,17 @@ type
   end;
 
   TIdLhcResponse = record
-    ContentType   : String;
     StatusCode    : Word;
+    ContentType   : String;
     ContentLength : Integer;
-    StreamBody    : TMemoryStream;
-    StringBody    : String;
-    RawStringBody : String;
+    ContentStream : TMemoryStream;
+    ContentString : String;
   end;
 
   TIdLiteHttpClient = class(TObject)
     private
       FSocket        : TIdTCPClient;
+      FTimeout       : Integer;
 
       FHost          : String;
       FPort          : Word;
@@ -53,6 +53,8 @@ type
       function    Post(AUrlOrPath: String; AData: String = ''; AContentType: String = 'application/json')       : TIdLhcResponse;
       function    Patch(AUrlOrPath: String; AData: String = ''; AContentType: String = 'application/json')      : TIdLhcResponse;
       function    Delete(AUrlOrPath: String; AData: String = ''; AContentType: String = 'application/json')     : TIdLhcResponse;
+
+      property    Timeout : Integer read FTimeout write FTimeout default 20000;
   end;
 
 implementation
@@ -92,10 +94,10 @@ begin
   LURL         := GetURLSegments(AUrl);
   AContentType := IfThen((Length(AData) > 0) and (Trim(AContentType) = ''),GetMimeType(AData),Trim(AContentType));
 
-  Result := IfThen(AMethod = '','GET',UpperCase(AMethod)) + ' ' + LURL.Path + ' HTTP/1.1' + CRLF;
-  Result := Result + 'Connection: close' + CRLF;
-  Result := Result + 'Host: ' + LURL.HostName + CRLF;
+  Result       := IfThen(AMethod = '','GET',UpperCase(AMethod)) + ' ' + LURL.Path + ' HTTP/1.1' + CRLF;
+  Result       := Result + 'Host: ' + LURL.HostName + CRLF;
   if (FAuthorization <> '') then Result := Result + 'Authorization: Basic ' + FAuthorization + CRLF;
+  Result       := Result + 'Connection: close' + CRLF;
 
   if (not (AData = '')) then begin
     Result := Result + 'Content-Type: ' + AContentType + CRLF;
@@ -107,14 +109,18 @@ end;
 
 constructor TIdLiteHttpClient.Create(const AHost: String; APort: Word);
 begin
-  FHost          := AHost;
-  FPort          := APort;
+  FHost                  := AHost;
+  FPort                  := APort;
 
-  FUsername      := '';
-  FPassword      := '';
-  FAuthorization := '';
+  FTimeout               := 20000;
 
-  FSocket        := TIdTCPClient.Create(nil);
+  FUsername              := '';
+  FPassword              := '';
+  FAuthorization         := '';
+
+  FSocket                := TIdTCPClient.Create(nil);
+  FSocket.ConnectTimeout := FTimeout;
+  FSocket.ReadTimeout    := FTimeout;
 end;
 
 destructor TIdLiteHttpClient.Destroy;

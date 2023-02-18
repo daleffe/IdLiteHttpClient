@@ -27,29 +27,33 @@ type
     private
       FSocket        : TIdTCPClient;
 
+      FHost          : String;
+      FPort          : Word;
+      FBasePath      : String;
       FAuthorization : String;
 
-      function GetURLSegments(AUrl: String)                                                            : TIdLHC_URL;
-      function BuildRequest(AMethod, AUrl, AData, AContentType: String)                                : String;
-      
-      function Request(AMethod, AUrl: String; AData: String = ''; AContentType: String = 'text/plain') : String;
+      function    GetURLSegments(const AUrlOrPath: String)                                                      : TIdLHC_URL;
+      function    GetMimeType(const AData: String)                                                              : String;
+      function    BuildRequest(AMethod, AUrl, AData, AContentType: String)                                      : String;
+
+      function    Request(AMethod, AUrlOrPath: String; AData: String = ''; AContentType: String = 'text/plain') : String;
     public
-      constructor Create;
+      constructor Create(const AHost: String = ''; APort: Word = 0; ABasePath: String = '');
       destructor  Destroy; override;
 
       procedure   SetAuthentication(AUsername, APassword: String);
 
-      function    Get(AUrl: String; AData: String = ''; AContentType: String = 'text/plain'): String;
-      function    Put(AUrl: String; AData: String = ''; AContentType: String = 'text/plain'): String;
-      function    Post(AUrl: String; AData: String = ''; AContentType: String = 'text/plain'): String;
-      function    Patch(AUrl: String; AData: String = ''; AContentType: String = 'text/plain'): String;      
-      function    Delete(AUrl: String; AData: String = ''; AContentType: String = 'text/plain'): String;
+      function    Get(AUrlOrPath: String; AData: String = ''; AContentType: String = 'text/plain')              : String;
+      function    Put(AUrlOrPath: String; AData: String = ''; AContentType: String = 'text/plain')              : String;
+      function    Post(AUrlOrPath: String; AData: String = ''; AContentType: String = 'text/plain')             : String;
+      function    Patch(AUrlOrPath: String; AData: String = ''; AContentType: String = 'text/plain')            : String;
+      function    Delete(AUrlOrPath: String; AData: String = ''; AContentType: String = 'text/plain')           : String;
   end;
 
 implementation
 
 uses
-  SysUtils, StrUtils, Windows, WinInet, EncdDecd;
+  Classes, SysUtils, StrUtils, Windows, WinInet, EncdDecd, UrlMon;
 
 { TIdLiteHttpClient }
 
@@ -58,8 +62,12 @@ begin
   //
 end;
 
-constructor TIdLiteHttpClient.Create;
+constructor TIdLiteHttpClient.Create(const AHost: String; APort: Word; ABasePath: String);
 begin
+  FHost          := AHost;
+  FPort          := APort;
+  FBasePath      := ABasePath;
+
   FAuthorization := '';
 
   FSocket        := TIdTCPClient.Create(nil);
@@ -68,85 +76,152 @@ end;
 destructor TIdLiteHttpClient.Destroy;
 begin
   if Assigned(FSocket) then FreeAndNil(FSocket);
-  
+
   inherited;
 end;
 
-function TIdLiteHttpClient.GetURLSegments(AUrl: String): TIdLHC_URL;
+function TIdLiteHttpClient.GetURLSegments(const AUrlOrPath: String): TIdLHC_URL;
+function RPos(const ASub, AIn: String; AStart: Integer = -1): Integer;
 var
-  lpszScheme      : array[0..INTERNET_MAX_SCHEME_LENGTH - 1]    of Char;
-  lpszHostName    : array[0..INTERNET_MAX_HOST_NAME_LENGTH - 1] of Char;
-  lpszUserName    : array[0..INTERNET_MAX_USER_NAME_LENGTH - 1] of Char;
-  lpszPassword    : array[0..INTERNET_MAX_PASSWORD_LENGTH - 1]  of Char;
-  lpszUrlPath     : array[0..INTERNET_MAX_PATH_LENGTH - 1]      of Char;
-  lpszExtraInfo   : array[0..1024 - 1]                          of Char;
-  lpUrlComponents : TURLComponents;
+  i, LStartPos, LTokenLen: Integer;
+begin
+  Result    := 0;
+  LTokenLen := Length(ASub);
+
+  if AStart < 0                             then AStart := Length(AIn);
+  if AStart < (Length(AIn) - LTokenLen + 1) then LStartPos := AStart else LStartPos := (Length(AIn) - LTokenLen + 1);
+  
+  for i := LStartPos downto 1 do begin
+    if SameText(Copy(AIn, i, LTokenLen), ASub) then begin
+      Result := i;
+      Break;
+    end;
+  end;
+end;
+function Fetch(var AInput: String; const ADelim: String): String;
+var
+  LPos: Integer;
+begin
+  LPos := Pos(ADelim, AInput);
+
+  if LPos = 0 then begin
+    Result := AInput;
+    AInput := '';
+  end else begin
+    Result := Copy(AInput, 1, LPos - 1);
+    AInput := Copy(AInput, LPos + Length(ADelim), MaxInt);
+  end;
+end;
+var
+  LBuffer, LURI : String;
+  LTokenPos     : Integer;
 begin
   FillChar(Result,SizeOf(Result),0);
 
-  ZeroMemory(@Result, SizeOf(TURLComponents));
-  ZeroMemory(@lpszScheme, SizeOf(lpszScheme));
-  ZeroMemory(@lpszHostName, SizeOf(lpszHostName));
-  ZeroMemory(@lpszUserName, SizeOf(lpszUserName));
-  ZeroMemory(@lpszPassword, SizeOf(lpszPassword));
-  ZeroMemory(@lpszUrlPath, SizeOf(lpszUrlPath));
-  ZeroMemory(@lpszExtraInfo, SizeOf(lpszExtraInfo));
-  ZeroMemory(@lpUrlComponents, SizeOf(TURLComponents));
+  LURI      := StringReplace(AUrlOrPath, '\', '/', [rfReplaceAll]);
+  LTokenPos := Pos('://', LURI);
 
-  lpUrlComponents.dwStructSize      := SizeOf(TURLComponents);
-  lpUrlComponents.lpszScheme        := lpszScheme;
-  lpUrlComponents.dwSchemeLength    := SizeOf(lpszScheme);
-  lpUrlComponents.lpszHostName      := lpszHostName;
-  lpUrlComponents.dwHostNameLength  := SizeOf(lpszHostName);
-  lpUrlComponents.lpszUserName      := lpszUserName;
-  lpUrlComponents.dwUserNameLength  := SizeOf(lpszUserName);
-  lpUrlComponents.lpszPassword      := lpszPassword;
-  lpUrlComponents.dwPasswordLength  := SizeOf(lpszPassword);
-  lpUrlComponents.lpszUrlPath       := lpszUrlPath;
-  lpUrlComponents.dwUrlPathLength   := SizeOf(lpszUrlPath);
-  lpUrlComponents.lpszExtraInfo     := lpszExtraInfo;
-  lpUrlComponents.dwExtraInfoLength := SizeOf(lpszExtraInfo);
+  if LTokenPos > 0 then begin
+    Result.Protocol := LowerCase(Copy(LURI, 1, LTokenPos - 1));
+    System.Delete(LURI, 1, LTokenPos + 2);
+    LTokenPos       := Pos('?', LURI);
 
-  InternetCrackUrl(PChar(AUrl), Length(AUrl), ICU_DECODE or ICU_ESCAPE, lpUrlComponents);
+    if LTokenPos > 0 then begin
+      Result.Params := Copy(LURI, LTokenPos + 1, MaxInt);
+      LURI          := Copy(LURI, 1, LTokenPos - 1);
+    end;
 
-  Result.Protocol := IfThen(lpUrlComponents.dwSchemeLength > 0,Trim(lpUrlComponents.lpszScheme),'');
-  Result.HostName := IfThen(lpUrlComponents.dwHostNameLength > 0,Trim(lpUrlComponents.lpszHostName),'');
-  Result.Port     := lpUrlComponents.nPort;
-  Result.UserName := IfThen(lpUrlComponents.dwUserNameLength > 0,Trim(lpUrlComponents.lpszUserName),'');
-  Result.PassWord := IfThen(lpUrlComponents.dwPasswordLength > 0,Trim(lpUrlComponents.lpszPassword),'');
-  Result.Document := IfThen(lpUrlComponents.dwUrlPathLength > 0,Trim(lpUrlComponents.lpszUrlPath),'');
-  Result.Params   := IfThen(lpUrlComponents.dwExtraInfoLength > 0,Trim(lpUrlComponents.lpszExtraInfo),'');
-  Result.Path     := Result.Document + Result.Params;
+    LBuffer   := Fetch(LURI, '/');
+    LTokenPos := Pos('@', LBuffer);
+
+    if LTokenPos > 0 then begin
+      Result.Password := Copy(LBuffer, 1, LTokenPos - 1);
+      System.Delete(LBuffer, 1, LTokenPos);
+      Result.UserName := Fetch(Result.Password, ':');
+
+      if Length(Result.UserName) = 0 then Result.Password := '';
+    end;
+
+    Result.HostName := Fetch(LBuffer, ':');
+    Result.Port     := StrToIntDef(LBuffer,StrToInt(IfThen(Result.Protocol = 'https','443','80')));
+    
+    LTokenPos       := RPos('/', LURI, -1);
+    
+    if LTokenPos > 0 then begin
+      Result.Path := '/' + Copy(LURI, 1, LTokenPos);
+      System.Delete(LURI, 1, LTokenPos);
+    end else Result.Path := '/';
+  end else begin
+    LTokenPos := Pos('?', LURI);
+
+    if LTokenPos > 0 then begin
+      Result.Params := Copy(LURI, LTokenPos + 1, MaxInt);
+      LURI          := Copy(LURI, 1, LTokenPos - 1);
+    end;
+
+    LTokenPos := RPos('/', LURI, -1);
+
+    if LTokenPos > 0 then begin
+      Result.Path := Copy(LURI, 1, LTokenPos);
+      System.Delete(LURI, 1, LTokenPos);
+    end;
+  end;
+
+  Result.Document := Fetch(LURI, '#');
 end;
 
-function TIdLiteHttpClient.Get(AUrl, AData, AContentType: String): String;
+function TIdLiteHttpClient.GetMimeType(const AData: String): String;
+var
+  LStream  : TMemoryStream;
+  MimeType : PWideChar;
 begin
-  Result := Request('GET',AUrl,AData,AContentType);
+  try
+    try
+      LStream := TMemoryStream.Create;
+      LStream.Write(Pointer(AData)^,Length(AData));
+
+      FindMimeFromData(nil, nil, LStream.Memory, LStream.Size, nil, 0, MimeType, 0);
+      Result := String(MimeType);
+    except
+      Result := '';
+    end;
+  finally
+    FreeAndNil(LStream);
+  end;
 end;
 
-function TIdLiteHttpClient.Put(AUrl, AData, AContentType: String): String;
+function TIdLiteHttpClient.Get(AUrlOrPath, AData, AContentType: String): String;
 begin
-  Result := Request('PUT',AUrl,AData,AContentType);
+  Result := Request('GET',AUrlOrPath,AData,AContentType);
 end;
 
-function TIdLiteHttpClient.Post(AUrl, AData, AContentType: String): String;
+function TIdLiteHttpClient.Put(AUrlOrPath, AData, AContentType: String): String;
 begin
-  Result := Request('POST',AUrl,AData,AContentType);
+  Result := Request('PUT',AUrlOrPath,AData,AContentType);
 end;
 
-function TIdLiteHttpClient.Patch(AUrl, AData, AContentType: String): String;
+function TIdLiteHttpClient.Post(AUrlOrPath, AData, AContentType: String): String;
 begin
-  Result := Request('PATCH',AUrl,AData,AContentType);
+  Result := Request('POST',AUrlOrPath,AData,AContentType);
 end;
 
-function TIdLiteHttpClient.Delete(AUrl, AData, AContentType: String): String;
+function TIdLiteHttpClient.Patch(AUrlOrPath, AData, AContentType: String): String;
 begin
-  Result := Request('DELETE',AUrl,AData,AContentType);
+  Result := Request('PATCH',AUrlOrPath,AData,AContentType);
 end;
 
-function TIdLiteHttpClient.Request(AMethod, AUrl, AData, AContentType: String): String;
+function TIdLiteHttpClient.Delete(AUrlOrPath, AData, AContentType: String): String;
 begin
-  //
+  Result := Request('DELETE',AUrlOrPath,AData,AContentType);
+end;
+
+function TIdLiteHttpClient.Request(AMethod, AUrlOrPath, AData, AContentType: String): String;
+var
+  LURL: TIdLHC_URL;
+begin
+  if (AContentType = '') then AContentType := GetMimeType(AData);
+
+  LURL := GetURLSegments(AUrlOrPath);  
 end;
 
 procedure TIdLiteHttpClient.SetAuthentication(AUsername, APassword: String);

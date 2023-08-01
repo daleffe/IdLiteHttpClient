@@ -40,6 +40,8 @@ type
       FPassword      : String;
       FAuthorization : String;
 
+      FHeaders       : array of String;
+
       procedure   SetTimeout(ATimeout: Word = 20);
 
       function    GetURLSegments(const AUrlOrPath: String)                                                      : TIdLhcURL;
@@ -53,6 +55,7 @@ type
       destructor  Destroy; override;
 
       procedure   SetAuthentication(AUsername, APassword: String);
+      procedure   AddHeader(Header: String);
 
       function    Get(AUrlOrPath: String; AData: String = ''; AContentType: String = 'application/json')    : TIdLhcResponse;
       function    Put(AUrlOrPath: String; AData: String = ''; AContentType: String = 'application/json')    : TIdLhcResponse;
@@ -92,18 +95,27 @@ begin
   end;
 end;
 { BuildRequest }
+var
+  Header: String;
 begin
   Result       := IfThen(AMethod = '','GET',UpperCase(AMethod)) + ' ' + IfThen(Pos('/',APath) = 0,'/') + APath + ' HTTP/1.1' + sLineBreak;
-  if (AHostName <> '')      then Result := Result + 'Host: ' + AHostName + sLineBreak;
+  if (AHostName <> '')      then Result := Result + 'Host: ' + AHostName + IfThen(FPort > 0,':' + IntToStr(FPort),'') + sLineBreak;
   if (FAuthorization <> '') then Result := Result + 'Authorization: Basic ' + FAuthorization + sLineBreak;
-  Result       := Result + 'Connection: close' + sLineBreak;
+  Result       := Result + 'Connection: keep-alive' + sLineBreak;
 
   if (not (AData = '')) then begin
     Result := Result + 'Content-Type: ' + IfThen((Length(AData) > 0) and (Trim(AContentType) = ''),GetMimeType(AData),Trim(AContentType)) + sLineBreak;
     Result := Result + 'Content-Length: ' + IntToStr(Length(AData)) + sLineBreak;
+
+    for Header in FHeaders do Result := Result + Header + sLineBreak;
+
     Result := Result + sLineBreak;
     Result := Result + AData;
-  end else Result := Result + sLineBreak;
+  end else begin
+    for Header in FHeaders do Result := Result + Header + sLineBreak;
+
+    Result := Result + sLineBreak;
+  end;
 end;
 
 constructor TIdLiteHttpClient.Create(const AHost: String; APort: Word);
@@ -216,7 +228,7 @@ begin
       LURI          := Copy(LURI, 1, LTokenPos - 1);
     end;
 
-    LTokenPos := RPos('/', LURI, -1);
+    LTokenPos       := RPos('/', LURI, -1);
 
     if LTokenPos > 0 then begin
       Result.Location := Copy(LURI, 1, LTokenPos);
@@ -496,6 +508,14 @@ begin
   FUsername      := Trim(AUsername);
   FPassword      := Trim(APassword);
   FAuthorization := IfThen((FUsername <> '') and (FPassword <> ''),EncodeString(Concat(FUsername,SEP,FPassword)),'');
+end;
+
+procedure TIdLiteHttpClient.AddHeader(Header: String);
+begin
+  if (Trim(Header) = '') then SetLength(FHeaders,0) else if (ContainsStr(Trim(Header),':')) then begin
+    SetLength(FHeaders,Length(FHeaders) + 1);
+    FHeaders[High(FHeaders)] := Trim(Header);  
+  end;
 end;
 
 procedure TIdLiteHttpClient.SetTimeout(ATimeout: Word);

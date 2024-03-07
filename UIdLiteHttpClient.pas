@@ -28,6 +28,8 @@ type
     ContentString : String;
   end;
 
+  TIdLhcResponseEvent = procedure(Response: TIdLhcResponse) of object;
+
   TIdLiteHttpClient = class(TObject)
     private
       FClient        : TIdTCPClient;
@@ -42,6 +44,10 @@ type
 
       FHeaders       : array of String;
 
+      FOnResponse    : TIdLhcResponseEvent;
+
+      FShutdown      : Boolean;
+
       procedure   SetTimeout(ATimeout: Word = 20);
 
       function    GetURLSegments(const AUrlOrPath: String)                                                      : TIdLhcURL;
@@ -50,9 +56,12 @@ type
       function    Request(AMethod, AUrlOrPath: String; AData: String = ''; AContentType: String = 'text/plain') : TIdLhcResponse;
 
       function    GetReasonPhrase(const AStatusCode: Integer)                                                   : String;
+      function    GetHeader(const AHeader: String; const AKey: String = '')                                     : String;
     public
       constructor Create(const AHost: String = ''; APort: Word = 0);
       destructor  Destroy; override;
+
+      procedure   Shutdown;
 
       procedure   SetAuthentication(AUsername, APassword: String);
       procedure   AddHeader(Header: String);
@@ -63,7 +72,9 @@ type
       function    Patch(AUrlOrPath: String; AData: String = ''; AContentType: String = 'application/json')  : TIdLhcResponse;
       function    Delete(AUrlOrPath: String; AData: String = ''; AContentType: String = 'application/json') : TIdLhcResponse;
 
-      property    Timeout : Word read FTimeout write SetTimeout default 20;  // In seconds
+      property    Timeout    : Word                read FTimeout    write SetTimeout default 20;  // In seconds
+      
+      property    OnResponse : TIdLhcResponseEvent read FOnResponse write FOnResponse;
   end;
 
 implementation
@@ -120,6 +131,8 @@ end;
 
 constructor TIdLiteHttpClient.Create(const AHost: String; APort: Word);
 begin
+  FShutdown              := False;
+
   FHost                  := AHost;
   FPort                  := APort;
 
@@ -243,6 +256,15 @@ end;
 function TIdLiteHttpClient.Get(AUrlOrPath, AData, AContentType: String): TIdLhcResponse;
 begin
   Result := Request('GET',AUrlOrPath,AData,AContentType);
+end;
+
+function TIdLiteHttpClient.GetHeader(const AHeader, AKey: String): String;
+begin
+  Result := EmptyStr;
+
+  if Trim(AKey) <> '' then if not StartsText(AKey,AHeader) then Exit;
+
+  Result := Trim(Copy(AHeader,Pos(':',AHeader) + 1,Length(AHeader)));  
 end;
 
 function TIdLiteHttpClient.GetReasonPhrase(const AStatusCode: Integer): String;
@@ -408,12 +430,14 @@ begin
 end;
 
 function TIdLiteHttpClient.Request(AMethod, AUrlOrPath, AData, AContentType: String): TIdLhcResponse;
+const
+  BOUNDARY = 'multipart/x-mixed-replace; boundary=';
 var
-  LURL            : TIdLhcURL;
-  LRequest, LLine : String;
-  LTries          : Word;
+  LURL                       : TIdLhcURL;
+  LRequest, LLine, LBoundary : String;
+  LTries, LCount             : Word;
 
-  LStringStream   : TStringStream;
+  LStringStream              : TStringStream;
 begin
   FillChar(Result,SizeOf(Result),0);
 
@@ -468,13 +492,13 @@ begin
 
         while LLine <> '' do begin
           LLine := FClient.IOHandler.ReadLn;
-          if StartsText('Content-Length',LLine)    then Result.ContentLength := StrToIntDef(Trim(Copy(LLine,Pos(':',LLine) + 1,Length(LLine))),0);
-          if StartsText('Content-Type',LLine)      then Result.ContentType   := Trim(Copy(LLine,Pos(':',LLine) + 1,Length(LLine)));
-          if StartsText('Transfer-Encoding',LLine) then if SameText('chunked',Trim(Copy(LLine,Pos(':',LLine) + 1,Length(LLine)))) then Result.ContentLength := -1;
+          if StartsText('Content-Length',LLine)    then Result.ContentLength := StrToIntDef(GetHeader(LLine),0);
+          if StartsText('Content-Type',LLine)      then Result.ContentType   := GetHeader(LLine);
+          if StartsText('Transfer-Encoding',LLine) then if SameText('chunked',GetHeader(LLine)) then Result.ContentLength := -1;
 
           if StartsText('Set-Cookie',LLine)        then begin
             SetLength(Result.Cookies,Length(Result.Cookies) + 1);
-            Result.Cookies[High(Result.Cookies)] := Trim(Copy(LLine,Pos(':',LLine) + 1,Length(LLine)));
+            Result.Cookies[High(Result.Cookies)] := GetHeader(LLine);
           end;
         end;
 
@@ -489,6 +513,40 @@ begin
 
             Result.ContentLength := StrToIntDef(Copy(Result.ContentString,0,Pos(sLineBreak,Result.ContentString)-1),-1);
             if Result.ContentLength >= 0 then Result.ContentString := Trim(ReplaceStr(Result.ContentString,IntToStr(Result.ContentLength),''));
+          end;
+        end;
+
+        if StartsText(BOUNDARY,Result.ContentType) and Assigned(FOnResponse) then begin
+          LBoundary           := '-- ' + Trim(ReplaceText(Result.ContentType,BOUNDARY,EmptyStr));
+          Result.ContentType  := Copy(Result.ContentType,1,Pos(';',Result.ContentType));
+
+          FOnResponse(Result);
+
+          FClient.ReadTimeout := 500;
+
+          while not FShutdown do begin
+            Result.ContentString := EmptyStr;
+            LCount               := 0;                      
+            repeat
+              LLine := Trim(FClient.IOHandler.ReadLn());
+
+              if LLine <> '' then begin                            
+                if ((LCount = 0) and (LLine = LBoundary)) then begin
+                  Result.ContentLength := 0;
+                  Result.ContentType   := EmptyStr;
+                end else if StartsText('Content-Length',LLine) then begin
+                  Result.ContentLength := StrToIntDef(GetHeader(LLine),0);
+                end else if StartsText('Content-Type',LLine) then begin
+                  Result.ContentType := GetHeader(LLine);
+                end else if ((LCount > 0) and (LLine <> LBoundary)) and (Result.ContentLength > 0) and (Result.ContentType <> '') then Result.ContentString := Result.ContentString + LLine + #13#10;
+
+                Inc(LCount);
+              end;
+            until (LLine = '');
+
+            Result.ContentString := Trim(Result.ContentString);
+
+            if (Result.ContentString <> '') then FOnResponse(Result);
           end;
         end;
       end;
@@ -527,6 +585,11 @@ begin
 
   FClient.ConnectTimeout := FTimeout * 1000;
   FClient.ReadTimeout    := FClient.ConnectTimeout;
+end;
+
+procedure TIdLiteHttpClient.Shutdown;
+begin
+  FShutdown := True;
 end;
 
 end.

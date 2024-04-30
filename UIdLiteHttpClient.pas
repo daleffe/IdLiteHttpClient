@@ -34,6 +34,7 @@ type
     private
       FClient        : TIdTCPClient;
       FTimeout       : Word;
+      FUseNagle      : Boolean;
 
       FHost          : String;
       FPort          : Word;
@@ -49,6 +50,7 @@ type
       FShutdown      : Boolean;
 
       procedure   SetTimeout(ATimeout: Word = 20);
+      procedure   SetUseNagle(AUseNagle: Boolean = True);
 
       function    GetURLSegments(const AUrlOrPath: String)                                                      : TIdLhcURL;
       function    BuildRequest(AMethod, AHostName, APath, AData, AContentType: String)                          : String;
@@ -72,7 +74,8 @@ type
       function    Patch(AUrlOrPath: String; AData: String = ''; AContentType: String = 'application/json')  : TIdLhcResponse;
       function    Delete(AUrlOrPath: String; AData: String = ''; AContentType: String = 'application/json') : TIdLhcResponse;
 
-      property    Timeout    : Word                read FTimeout    write SetTimeout default 20;  // In seconds
+      property    Timeout    : Word                read FTimeout    write SetTimeout  default 20;  // In seconds
+      property    UseNagle   : Boolean             read FUseNagle   write SetUseNagle default True;
       
       property    OnResponse : TIdLhcResponseEvent read FOnResponse write FOnResponse;
   end;
@@ -131,6 +134,8 @@ end;
 
 constructor TIdLiteHttpClient.Create(const AHost: String; APort: Word);
 begin
+  FUseNagle              := True;
+
   FShutdown              := False;
 
   FHost                  := AHost;
@@ -142,6 +147,7 @@ begin
 
   FClient                := TIdTCPClient.Create(nil);
 
+  SetUseNagle(True);
   SetTimeout();
 end;
 
@@ -585,6 +591,13 @@ begin
 
   FClient.ConnectTimeout := FTimeout * 1000;
   FClient.ReadTimeout    := FClient.ConnectTimeout;
+end;
+
+procedure TIdLiteHttpClient.SetUseNagle(AUseNagle: Boolean);
+begin
+  // Enable TCP_NODELAY socket option (disabled Nagle algo)
+  FUseNagle                                  := AUseNagle;
+  if Assigned(FClient) then FClient.UseNagle := FUseNagle;  
 end;
 
 procedure TIdLiteHttpClient.Shutdown;

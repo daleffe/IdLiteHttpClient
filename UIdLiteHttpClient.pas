@@ -597,7 +597,9 @@ procedure TIdLiteHttpClient.SetUseNagle(AUseNagle: Boolean);
 begin
   // Enable TCP_NODELAY socket option (disabled Nagle algo)
   FUseNagle                                  := AUseNagle;
-  if Assigned(FClient) then FClient.UseNagle := FUseNagle;  
+  {$IF CompilerVersion >= 28.0} // Delphi XE7 corresponds to CompilerVersion 28.0
+  if Assigned(FClient) then FClient.UseNagle := FUseNagle;
+  {$IFEND}
 end;
 
 procedure TIdLiteHttpClient.Shutdown;
